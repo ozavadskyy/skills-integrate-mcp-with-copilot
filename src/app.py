@@ -5,6 +5,7 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
+from datetime import datetime
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
@@ -13,6 +14,9 @@ import os
 from pathlib import Path
 import json
 import secrets
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+from sqlalchemy.exc import IntegrityError
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -28,70 +32,115 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class Base(DeclarativeBase):
+    pass
+
+
+class Activity(Base):
+    __tablename__ = "activities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
+    description: Mapped[str] = mapped_column(String(1000), nullable=False)
+    schedule: Mapped[str] = mapped_column(String(300), nullable=False)
+    max_participants: Mapped[int] = mapped_column(Integer, nullable=False)
+    enrollments: Mapped[list["ActivityEnrollment"]] = relationship(
+        back_populates="activity", cascade="all, delete-orphan"
+    )
+
+
+class Student(Base):
+    __tablename__ = "students"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    grade: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    enrollments: Mapped[list["ActivityEnrollment"]] = relationship(
+        back_populates="student", cascade="all, delete-orphan"
+    )
+
+
+class ActivityEnrollment(Base):
+    __tablename__ = "activity_enrollments"
+    __table_args__ = (
+        UniqueConstraint("activity_id", "student_id", name="uq_activity_student"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), nullable=False)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), nullable=False)
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    activity: Mapped[Activity] = relationship(back_populates="enrollments")
+    student: Mapped[Student] = relationship(back_populates="enrollments")
+
+
 teachers_file = current_dir / "teachers.json"
 with open(teachers_file, "r", encoding="utf-8") as file:
     teacher_credentials = json.load(file)
 
+db_file = current_dir / "activities.db"
+seed_file = current_dir / "activities_seed.json"
+engine = create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine)
+
 # Simple in-memory sessions for teacher mode.
 admin_sessions = {}
 
-# In-memory activity database
-activities = {
-    "Chess Club": {
-        "description": "Learn strategies and compete in chess tournaments",
-        "schedule": "Fridays, 3:30 PM - 5:00 PM",
-        "max_participants": 12,
-        "participants": ["michael@mergington.edu", "daniel@mergington.edu"]
-    },
-    "Programming Class": {
-        "description": "Learn programming fundamentals and build software projects",
-        "schedule": "Tuesdays and Thursdays, 3:30 PM - 4:30 PM",
-        "max_participants": 20,
-        "participants": ["emma@mergington.edu", "sophia@mergington.edu"]
-    },
-    "Gym Class": {
-        "description": "Physical education and sports activities",
-        "schedule": "Mondays, Wednesdays, Fridays, 2:00 PM - 3:00 PM",
-        "max_participants": 30,
-        "participants": ["john@mergington.edu", "olivia@mergington.edu"]
-    },
-    "Soccer Team": {
-        "description": "Join the school soccer team and compete in matches",
-        "schedule": "Tuesdays and Thursdays, 4:00 PM - 5:30 PM",
-        "max_participants": 22,
-        "participants": ["liam@mergington.edu", "noah@mergington.edu"]
-    },
-    "Basketball Team": {
-        "description": "Practice and play basketball with the school team",
-        "schedule": "Wednesdays and Fridays, 3:30 PM - 5:00 PM",
-        "max_participants": 15,
-        "participants": ["ava@mergington.edu", "mia@mergington.edu"]
-    },
-    "Art Club": {
-        "description": "Explore your creativity through painting and drawing",
-        "schedule": "Thursdays, 3:30 PM - 5:00 PM",
-        "max_participants": 15,
-        "participants": ["amelia@mergington.edu", "harper@mergington.edu"]
-    },
-    "Drama Club": {
-        "description": "Act, direct, and produce plays and performances",
-        "schedule": "Mondays and Wednesdays, 4:00 PM - 5:30 PM",
-        "max_participants": 20,
-        "participants": ["ella@mergington.edu", "scarlett@mergington.edu"]
-    },
-    "Math Club": {
-        "description": "Solve challenging problems and participate in math competitions",
-        "schedule": "Tuesdays, 3:30 PM - 4:30 PM",
-        "max_participants": 10,
-        "participants": ["james@mergington.edu", "benjamin@mergington.edu"]
-    },
-    "Debate Team": {
-        "description": "Develop public speaking and argumentation skills",
-        "schedule": "Fridays, 4:00 PM - 5:30 PM",
-        "max_participants": 12,
-        "participants": ["charlotte@mergington.edu", "henry@mergington.edu"]
+def initialize_database() -> None:
+    """Create database tables and seed initial data on first run."""
+    Base.metadata.create_all(engine)
+
+    with SessionLocal() as db:
+        has_activities = db.query(Activity.id).first() is not None
+        if has_activities:
+            return
+
+        with open(seed_file, "r", encoding="utf-8") as file:
+            seed_activities = json.load(file)
+
+        for activity_name, details in seed_activities.items():
+            activity = Activity(
+                name=activity_name,
+                description=details["description"],
+                schedule=details["schedule"],
+                max_participants=details["max_participants"],
+            )
+            db.add(activity)
+            db.flush()
+
+            for email in details.get("participants", []):
+                student = db.query(Student).filter(Student.email == email).first()
+                if student is None:
+                    student = Student(email=email)
+                    db.add(student)
+                    db.flush()
+
+                db.add(ActivityEnrollment(activity_id=activity.id, student_id=student.id))
+
+        db.commit()
+
+
+def activity_to_response(db, activity: Activity) -> dict:
+    enrollment_rows = (
+        db.query(Student.email)
+        .join(ActivityEnrollment, ActivityEnrollment.student_id == Student.id)
+        .filter(ActivityEnrollment.activity_id == activity.id)
+        .order_by(Student.email.asc())
+        .all()
+    )
+    participants = [row[0] for row in enrollment_rows]
+    return {
+        "description": activity.description,
+        "schedule": activity.schedule,
+        "max_participants": activity.max_participants,
+        "participants": participants,
     }
-}
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    initialize_database()
 
 
 @app.get("/")
@@ -101,7 +150,12 @@ def root():
 
 @app.get("/activities")
 def get_activities():
-    return activities
+    with SessionLocal() as db:
+        activity_rows = db.query(Activity).order_by(Activity.name.asc()).all()
+        response = {}
+        for activity in activity_rows:
+            response[activity.name] = activity_to_response(db, activity)
+        return response
 
 
 @app.post("/auth/login")
@@ -150,22 +204,41 @@ def signup_for_activity(
             detail="Teacher login required for signup"
         )
 
-    # Validate activity exists
-    if activity_name not in activities:
-        raise HTTPException(status_code=404, detail="Activity not found")
+    with SessionLocal() as db:
+        activity = db.query(Activity).filter(Activity.name == activity_name).first()
+        if activity is None:
+            raise HTTPException(status_code=404, detail="Activity not found")
 
-    # Get the specific activity
-    activity = activities[activity_name]
+        student = db.query(Student).filter(Student.email == email).first()
+        if student is None:
+            student = Student(email=email)
+            db.add(student)
+            db.flush()
 
-    # Validate student is not already signed up
-    if email in activity["participants"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Student is already signed up"
+        existing = (
+            db.query(ActivityEnrollment)
+            .filter(
+                ActivityEnrollment.activity_id == activity.id,
+                ActivityEnrollment.student_id == student.id,
+            )
+            .first()
         )
+        if existing is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Student is already signed up"
+            )
 
-    # Add student
-    activity["participants"].append(email)
+        db.add(ActivityEnrollment(activity_id=activity.id, student_id=student.id))
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail="Student is already signed up"
+            )
+
     return {"message": f"Signed up {email} for {activity_name}"}
 
 
@@ -182,20 +255,33 @@ def unregister_from_activity(
             detail="Teacher login required for unregister"
         )
 
-    # Validate activity exists
-    if activity_name not in activities:
-        raise HTTPException(status_code=404, detail="Activity not found")
+    with SessionLocal() as db:
+        activity = db.query(Activity).filter(Activity.name == activity_name).first()
+        if activity is None:
+            raise HTTPException(status_code=404, detail="Activity not found")
 
-    # Get the specific activity
-    activity = activities[activity_name]
+        student = db.query(Student).filter(Student.email == email).first()
+        if student is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Student is not signed up for this activity"
+            )
 
-    # Validate student is signed up
-    if email not in activity["participants"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Student is not signed up for this activity"
+        enrollment = (
+            db.query(ActivityEnrollment)
+            .filter(
+                ActivityEnrollment.activity_id == activity.id,
+                ActivityEnrollment.student_id == student.id,
+            )
+            .first()
         )
+        if enrollment is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Student is not signed up for this activity"
+            )
 
-    # Remove student
-    activity["participants"].remove(email)
+        db.delete(enrollment)
+        db.commit()
+
     return {"message": f"Unregistered {email} from {activity_name}"}
