@@ -7,22 +7,29 @@ A super simple FastAPI application that allows students to view and sign up for 
 - View all available extracurricular activities
 - Teacher-only sign up and unregister actions via Admin Mode
 - Teacher login/logout endpoints with session token
+- SQLite persistence for activities, students, and enrollments (SQLAlchemy)
 
 ## Getting Started
 
 1. Install the dependencies:
 
    ```
-   pip install fastapi uvicorn
+   pip install -r ../requirements.txt
    ```
 
 2. Run the application:
 
    ```
-   python app.py
+   uvicorn app:app --reload
    ```
 
-3. Open your browser and go to:
+3. Optional: initialize database manually (normally auto-runs on startup):
+
+   ```
+   python init_db.py
+   ```
+
+4. Open your browser and go to:
    - API documentation: http://localhost:8000/docs
    - Alternative documentation: http://localhost:8000/redoc
 
@@ -50,17 +57,28 @@ Default credentials:
 
 ## Data Model
 
-The application uses a simple data model with meaningful identifiers:
+The application uses SQLite via SQLAlchemy with these tables:
 
-1. **Activities** - Uses activity name as identifier:
+1. **activities**
 
+   - Name (unique)
    - Description
    - Schedule
-   - Maximum number of participants allowed
-   - List of student emails who are signed up
+   - Maximum number of participants
 
-2. **Students** - Uses email as identifier:
-   - Name
-   - Grade level
+2. **students**
 
-All data is stored in memory, which means data will be reset when the server restarts.
+   - Email (unique)
+   - Optional name and grade fields
+
+3. **activity_enrollments**
+
+   - Activity and student references
+   - Enrollment timestamp
+   - Unique constraint to prevent duplicate enrollment
+
+## Initialization and Seed Data
+
+- Database file: `activities.db`
+- Seed fixture: `activities_seed.json`
+- On first run, the app creates tables and seeds initial activities/participants.
