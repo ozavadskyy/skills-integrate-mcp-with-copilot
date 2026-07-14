@@ -88,35 +88,37 @@ SessionLocal = sessionmaker(bind=engine)
 admin_sessions = {}
 
 def initialize_database() -> None:
-    """Create database tables and seed initial data on first run."""
+    """Create database tables and ensure seed activities exist."""
     Base.metadata.create_all(engine)
 
     with SessionLocal() as db:
-        has_activities = db.query(Activity.id).first() is not None
-        if has_activities:
-            return
-
         with open(seed_file, "r", encoding="utf-8") as file:
             seed_activities = json.load(file)
 
         for activity_name, details in seed_activities.items():
-            activity = Activity(
-                name=activity_name,
-                description=details["description"],
-                schedule=details["schedule"],
-                max_participants=details["max_participants"],
-            )
-            db.add(activity)
-            db.flush()
+            activity = db.query(Activity).filter(Activity.name == activity_name).first()
+            activity_is_new = False
+            if activity is None:
+                activity = Activity(
+                    name=activity_name,
+                    description=details["description"],
+                    schedule=details["schedule"],
+                    max_participants=details["max_participants"],
+                )
+                db.add(activity)
+                db.flush()
+                activity_is_new = True
 
-            for email in details.get("participants", []):
-                student = db.query(Student).filter(Student.email == email).first()
-                if student is None:
-                    student = Student(email=email)
-                    db.add(student)
-                    db.flush()
+            # Only seed participants for newly inserted activities.
+            if activity_is_new:
+                for email in details.get("participants", []):
+                    student = db.query(Student).filter(Student.email == email).first()
+                    if student is None:
+                        student = Student(email=email)
+                        db.add(student)
+                        db.flush()
 
-                db.add(ActivityEnrollment(activity_id=activity.id, student_id=student.id))
+                    db.add(ActivityEnrollment(activity_id=activity.id, student_id=student.id))
 
         db.commit()
 

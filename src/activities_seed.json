@@ -79,5 +79,11 @@
       "charlotte@mergington.edu",
       "henry@mergington.edu"
     ]
+  },
+  "GitHub Skills": {
+    "description": "Learn practical coding, collaboration, and GitHub workflows",
+    "schedule": "Wednesdays, 4:00 PM - 5:00 PM",
+    "max_participants": 25,
+    "participants": []
   }
 }
